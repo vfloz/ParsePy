@@ -18,7 +18,8 @@ import datetime
 import collections
 
 API_ROOT = 'https://api.parse.com/1/classes'
-
+API_USER_ROOT = 'https://api.parse.com/1/users'
+API_ROLE_ROOT = 'https://api.parse.com/1/roles'
 APPLICATION_ID = ''
 MASTER_KEY = ''
 
@@ -27,12 +28,18 @@ class ParseBinaryDataWrapper(str):
     pass
 
 
+
 class ParseBase(object):
+    url = None
+
+    def _setURL(self, uri):
+        self.url = API_ROOT + uri
+
     def _executeCall(self, uri, http_verb, data=None):
-        url = API_ROOT + uri
-
+        self._setURL(uri)
+        url = self.url
         request = urllib2.Request(url, data)
-
+        print url
         request.add_header('Content-type', 'application/json')
 
         # we could use urllib2's authentication system, but it seems like overkill for this
@@ -91,6 +98,7 @@ class ParseObject(ParseBase):
         self = self.__init__(None)
 
     def _populateFromDict(self, attrs_dict):
+        print 'Start populating %s ' % self._class_name
         self._object_id = attrs_dict['objectId']
         self._created_at = attrs_dict['createdAt']
         self._updated_at = attrs_dict['updatedAt']
@@ -100,7 +108,6 @@ class ParseObject(ParseBase):
         del attrs_dict['updatedAt']
 
         attrs_dict = dict(map(self._convertFromParseType, attrs_dict.items()))
-
         self.__dict__.update(attrs_dict)
 
     def _convertToParseType(self, prop):
@@ -124,14 +131,22 @@ class ParseObject(ParseBase):
 
         if type(value) == dict and value.has_key('__type'):
             if value['__type'] == 'Pointer':
-                value = ParseQuery(value['className']).get(value['objectId'])
+                pass
+                #value = ParseQuery(value['className']).get(value['objectId'])
+                #value = {"_class_name":value['className'], }
             elif value['__type'] == 'Date':
                 value = self._ISO8601ToDatetime(value['iso'])
             elif value['__type'] == 'Bytes':
                 value = ParseBinaryDataWrapper(base64.b64decode(value['base64']))
+            elif value['__type'] == 'Relation':
+                pass
+            elif value['__type'] == 'Object':
+                print 'Found Object %s<br/>' %value['className']
+                value = ParseObject(value['className'], value)
             else:
-                raise Exception('Invalid __type.')
-
+                raise Exception('Invalid __type: %s' % value['__type'])
+            #print e
+        print '%s:%s<br/>' % (key, value)
         return (key, value)
 
     def _getJSONProperties(self):
@@ -175,13 +190,18 @@ class ParseObject(ParseBase):
 
         self._updated_at = response_dict['updatedAt']
 
+    def __str__(self):
+        return str(self.__dict__)
+
 
 class ParseQuery(ParseBase):
     def __init__(self, class_name):
+        super(ParseQuery, self).__init__()
         self._class_name = class_name
         self._where = collections.defaultdict(dict)
         self._options = {}
         self._object_id = ''
+        self._includes = []
 
     def eq(self, name, value):
         self._where[name] = value
@@ -226,17 +246,25 @@ class ParseQuery(ParseBase):
         self._object_id = object_id
         return self._fetch(single_result=True)
 
+    def include(self, key):
+        self._includes.append(key)
+
     def fetch(self):
         # hide the single_result param of the _fetch method from the library user
         # since it's only useful internally
         return self._fetch() 
 
-    def _fetch(self, single_result=False):
-        # URL: /1/classes/<className>/<objectId>
-        # HTTP Verb: GET
+    def _baseURI (self):
+        return '/%s' % self._class_name
 
+    def _buildURI (self):
+        uri = self._baseURI()
+        includeQS = self._includeQS()
         if self._object_id:
-            uri = '/%s/%s' % (self._class_name, self._object_id)
+            uri = '%s/%s' % (uri, self._object_id)
+            print uri
+            if includeQS:
+                uri = '%s?%s' % (uri, includeQS)
         else:
             options = dict(self._options) # make a local copy
             if self._where:
@@ -244,12 +272,47 @@ class ParseQuery(ParseBase):
                 where = json.dumps(self._where)
                 options.update({'where': where})
 
-            uri = '/%s?%s' % (self._class_name, urllib.urlencode(options))
+            uri = '%s?%s' % (uri, urllib.urlencode(options))
+            if includeQS:
+                uri = '%s&%s' % (uri, includeQS)
+        return uri
 
+    def _includeQS(self):
+        qs = None
+        if self._includes and len(self._includes)>0:
+            #include = json.dumps(self._includes)
+            #qs = urllib.urlencode({'include':include})
+            qs = "include=%s" % ','.join(self._includes)
+        return qs
+    
+    def _fetch(self, single_result=False):
+        # URL: /1/classes/<className>/<objectId>
+        # HTTP Verb: GET
+        uri = self._buildURI()
+        
+        print uri
         response_dict = self._executeCall(uri, 'GET')
 
         if single_result:
+            print '<br/>----- Response Dict---- <br/>'
+            print response_dict
+            print '<br/>---- Response Dict---- <br/>'
             return ParseObject(self._class_name, response_dict)
         else:
             return [ParseObject(self._class_name, result) for result in response_dict['results']]
-                
+ 
+class ParseUserQuery(ParseQuery):
+    def __init__(self):
+        super(ParseUserQuery, self).__init__("User")
+        #ParseQuery.__init__("User")
+        self._class_name = "User"
+        self._where = collections.defaultdict(dict)
+        self._options = {}
+        self._object_id = ''
+        self._includes = []
+
+    def _setURL(self, uri):
+        self.url = API_USER_ROOT + uri
+
+    def _baseURI(self):
+        return ''      
